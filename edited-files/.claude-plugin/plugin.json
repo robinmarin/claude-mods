@@ -1,0 +1,1 @@
+{ "name": "edited-files", "version": "0.1.0", "description": "Sidebar listing files edited this session with +adds/-removals", "types": "./types/index.d.ts" }
