@@ -13,7 +13,9 @@ A sidebar pane that lists every file Claude edits or writes during a session, wi
 +31 -0 /src/new-file.ts
 ```
 
-The counts add up across repeated edits to the same file. The pane opens on session start and on each prompt. If you close it, `/edited-files` brings it back. On a terminal narrower than 144 columns it shows inline above the prompt instead of docking to the side.
+The counts add up across repeated edits to the same file. The Edit and Write tools report their own diffs. For Bash, the mod snapshots the git working tree before and after each command and diffs the two, so files changed by `sed`, heredocs, scripts and so on show up too. That part only works inside a git repo, skips gitignored files, and counts anything else that changed the tree while the command ran. The snapshots use a separate index at `.git/edited-files.index`, so your staging area is never touched.
+
+The pane opens on session start and on each prompt. If you close it, `/edited-files` brings it back. On a terminal narrower than 144 columns it shows inline above the prompt instead of docking to the side.
 
 ## Install
 

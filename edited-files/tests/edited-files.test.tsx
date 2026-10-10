@@ -23,3 +23,22 @@ test('sums +/- per file across edits', async ($, on) => {
     await ui.unmount()
   }
 })
+
+test('counts files a Bash command changed, from git tree snapshots', async ($, on) => {
+  const trees = ['t-before', 't-after']
+  const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', (_$, e) =>
+    ok(e.argv[0] === 'sh' ? `${trees.shift()}\n/repo\n` : '31\t0\tREADME.md\x002\t1\tsrc/a b.ts\x00-\t-\timg.png\x00'))
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'cat > README.md', description: 'x' })
+
+  const ui = await $.ui.mount({
+    plugin: 'edited-files', surface: 'terminal', component: 'Pane', requestId: 'edited-files',
+    props: { title: 'Edited files', isFocused: false, bodyColumns: 60, bodyRows: 20, placement: 'dock', scroll: { top: 0 } } as never,
+  })
+  expect(await ui.find({ type: 'Text', text: '+31 ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '/repo/README.md' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '/repo/src/a b.ts' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '/repo/img.png' })).toBeDefined()
+  await ui.unmount()
+})
