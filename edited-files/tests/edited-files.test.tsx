@@ -11,6 +11,8 @@ const mount = ($: Parameters<TestBody>[0], surface: 'terminal' | 'desktop') =>
 
 test('Edit and Write: tree, totals, new marker, Enter shows the diff', async ($, on) => {
   on('session.cwd', () => ({ value: '/proj' }))
+  const opens: { rows?: number; columns?: number }[] = []
+  on('ui.open', (_$, e) => { opens.push(e); return { value: { isPlaced: true } } })
   on('tool.call', { tool: 'Edit' }, (_$, e) => ({
     result: {
       filePath: e.file_path, oldString: e.old_string, newString: e.new_string,
@@ -42,8 +44,11 @@ test('Edit and Write: tree, totals, new marker, Enter shows the diff', async ($,
     expect(await ui.find({ type: 'Text', text: '2 files' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'a.ts' })).toBeUndefined()
     expect(await ui.find({ key: 'toggle', text: 'expand' })).toBeDefined()
+    // and asks the pane itself to shrink, then to go back to the default size
+    expect(opens.at(-1)).toMatchObject({ rows: 1, columns: 40 })
     await ui.press({ key: 'toggle' })
     expect(await ui.find({ type: 'Text', text: 'a.ts' })).toBeDefined()
+    expect(opens.at(-1)?.rows).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -74,5 +79,35 @@ test('Bash: files from git tree snapshots, status, diff without headers', async 
   await ui.press({ key: '/repo/README.md' })
   expect(await ui.find({ type: 'Text', text: '+hello' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '+++ b/README.md' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('flip moves the view from the pane to the band above the prompt and back', async ($, on) => {
+  on('session.cwd', () => ({ value: '/proj' }))
+  const calls: string[] = []
+  on('ui.open', () => { calls.push('open'); return { value: { isPlaced: true } } })
+  on('ui.close', () => { calls.push('close'); return { value: undefined } })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => { const { Text } = $.ui.resolve(e); return <Text>engine band</Text> })
+  on('tool.call', { tool: 'Write' }, (_$, e) => ({
+    result: { type: 'create', filePath: e.file_path, content: e.content, structuredPatch: [], originalFile: null },
+  }))
+  await $.tool.call({ tool: 'Write', tool_use_id: 'w1', file_path: '/proj/a.ts', content: 'x' })
+
+  const band = () => $.ui.mount({
+    plugin: 'edited-files', surface: 'terminal', component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 60, scroll: { top: 0 } } as never,
+  })
+
+  const pane = await mount($, 'terminal')
+  await pane.press({ key: 'flip' })
+  expect(calls.at(-1)).toBe('close')
+  await pane.unmount()
+
+  const ui = await band()
+  expect(await ui.find({ type: 'Text', text: 'a.ts' })).toBeDefined()
+  await ui.press({ key: 'flip' })
+  expect(calls.at(-1)).toBe('open')
+  expect(await ui.find({ type: 'Text', text: 'a.ts' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'engine band' })).toBeDefined()
   await ui.unmount()
 })

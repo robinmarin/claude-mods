@@ -12,6 +12,6 @@ export type OpenDiff = { path: string; lines: string[] }
 
 declare module 'claude-code' {
   interface PluginState {
-    'edited-files': { files: FileStat[]; open: OpenDiff | null; minimized: boolean }
+    'edited-files': { files: FileStat[]; open: OpenDiff | null; minimized: boolean; flipped: boolean }
   }
 }

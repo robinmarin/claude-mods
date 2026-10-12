@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { Change, FileStat, FileStatus } from '../types'
 
@@ -7,6 +7,8 @@ const PANE = 'edited-files'
 const files = atom({ plugin: 'edited-files', key: 'files' } as const, [])
 const open = atom({ plugin: 'edited-files', key: 'open' } as const, null)
 const minimized = atom({ plugin: 'edited-files', key: 'minimized' } as const, false)
+// true: drawn in the band above the prompt instead of the pane
+const flipped = atom({ plugin: 'edited-files', key: 'flipped' } as const, false)
 
 // ponytail: a change keeps its first 500 diff lines, enough to read, not to replay
 const MAX_LINES = 500
@@ -144,23 +146,42 @@ const tree = (list: FileStat[], cwd: string): Row[] => {
   return rows
 }
 
+// a minimized pane asks for one row inline and a narrow dock; expanded it asks
+// for nothing, so the surface's default comes back. Every open sets the size
+// anew, so all of them go through here. Flipped into the band, it stays shut.
+// ponytail: a size the person dragged wins over these, as $.ui.open documents
+const openPane = async ($: EngineInterface) => {
+  if (await read($, flipped)) return
+  await $.ui.open({ id: PANE, title: 'Edited files', ...(await read($, minimized) ? { rows: 1, columns: 40 } : {}) })
+}
+
+// the surface alone picks where a pane sits (docked beside the transcript in a
+// wide fullscreen, else inline), so flip swaps the pane for the band above the
+// prompt, which stacks under the transcript
+const flip = async ($: EngineInterface) => {
+  const toBand = !(await read($, flipped))
+  await update($, flipped, () => toBand)
+  if (toBand) await $.ui.close({ id: PANE })
+  else await openPane($)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'edited-files', description: 'Show files edited this session' })
-    void $.ui.open({ id: PANE, title: 'Edited files' })
+    void openPane($)
     return next(e)
   })
 
   // an open the mod makes on its own waits below 144 columns; one answering a
   // prompt is placed at any width, inline above the prompt when narrow
   on('prompt.submit', async ($, e, next) => {
-    await $.ui.open({ id: PANE, title: 'Edited files' })
+    await openPane($)
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'edited-files' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Edited files' })
-    return { text: 'Edited files pane opened.' }
+    await openPane($)
+    return { text: await read($, flipped) ? 'Edited files is in the band above the prompt.' : 'Edited files pane opened.' }
   })
 
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
@@ -195,70 +216,77 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const cwd = await $.session.cwd()
-    const diff = await read($, open)
+  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => draw($, e, e.props.isFocused))
 
-    if (diff) {
-      const name = diff.path.startsWith(cwd + '/') ? diff.path.slice(cwd.length + 1) : diff.path
-      return (
-        <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Button plain hotkey="b" autoFocus onPress={() => update($, open, () => null)}>back</Button>
-            <Text bold wrap="truncate-end">  {name}</Text>
-          </Box>
-          {diff.lines.length === 0 && <Text dimColor>No diff to show.</Text>}
-          {diff.lines.map(l => (
-            <Text wrap="truncate-end" dimColor={l.startsWith('@@')}
-              color={l[0] === '+' ? 'green' : l[0] === '-' ? 'red' : undefined}>{l}</Text>
-          ))}
-        </Box>
-      )
-    }
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) =>
+    e.props.hasSurvey || !(await read($, flipped)) ? next(e) : draw($, e, false))
+}
 
-    const list = await read($, files)
-    const min = await read($, minimized)
-    const rows = min ? [] : tree(list, cwd)
-    const show = (f: FileStat) => async () => {
-      const lines = await diffLines($, f.changes ?? []).catch(() => ['(could not read the diff)'])
-      await update($, open, () => ({ path: f.path, lines }))
-    }
+const draw = async ($: EngineInterface, e: RenderInput<'Pane' | 'AbovePrompt'>, isFocused: boolean) => {
+  const { Box, Button, Text } = $.ui.resolve(e)
+  const cwd = await $.session.cwd()
+  const diff = await read($, open)
 
+  if (diff) {
+    const name = diff.path.startsWith(cwd + '/') ? diff.path.slice(cwd.length + 1) : diff.path
     return (
       <Box flexDirection="column">
-        {list.length === 0 && <Text dimColor>No edits yet.</Text>}
-        {list.length > 0 && (
-          <Box flexDirection="row" marginBottom={min ? 0 : 1}>
-            <Box flexGrow={1}>
-              <Text dimColor>{list.length} file{list.length === 1 ? '' : 's'}</Text>
-            </Box>
-            <Text color="green" dimColor> +{list.reduce((n, f) => n + f.adds, 0)}</Text>
-            <Text color="red" dimColor> -{list.reduce((n, f) => n + f.dels, 0)}</Text>
-            <Text> </Text>
-            <Button key="toggle" plain hotkey="m" dimColor onPress={() => update($, minimized, m => !m)}>
-              {min ? 'expand' : 'minimize'}
-            </Button>
-          </Box>
-        )}
-        {rows.map(r => (
-          <Box key={r.key} flexDirection="row">
-            <Text dimColor>{r.prefix}</Text>
-            <Box flexGrow={1}>
-              {r.file
-                ? <Button key={r.key} plain onPress={show(r.file)}>
-                    <Text wrap="truncate-end" strikethrough={r.file.status === 'deleted'}
-                      color={r.file.status === 'new' ? 'green' : r.file.status === 'deleted' ? 'red' : undefined}>{r.name}</Text>
-                    {(r.file.status === 'new' || r.file.status === 'deleted') && <Text dimColor> {r.file.status}</Text>}
-                  </Button>
-                : <Text bold color="blue" wrap="truncate-end">{r.name}</Text>}
-            </Box>
-            <Text color="green" dimColor={!r.file}> +{r.adds}</Text>
-            <Text color="red" dimColor={!r.file}> -{r.dels}</Text>
-          </Box>
+        <Box flexDirection="row">
+          <Button plain hotkey="b" autoFocus onPress={() => update($, open, () => null)}>back</Button>
+          <Text bold wrap="truncate-end">  {name}</Text>
+        </Box>
+        {diff.lines.length === 0 && <Text dimColor>No diff to show.</Text>}
+        {diff.lines.map(l => (
+          <Text wrap="truncate-end" dimColor={l.startsWith('@@')}
+            color={l[0] === '+' ? 'green' : l[0] === '-' ? 'red' : undefined}>{l}</Text>
         ))}
-        {!min && list.length > 0 && e.props.isFocused && <Text dimColor>Enter on a file shows its diff</Text>}
       </Box>
     )
-  })
+  }
+
+  const list = await read($, files)
+  const min = await read($, minimized)
+  const rows = min ? [] : tree(list, cwd)
+  const show = (f: FileStat) => async () => {
+    const lines = await diffLines($, f.changes ?? []).catch(() => ['(could not read the diff)'])
+    await update($, open, () => ({ path: f.path, lines }))
+  }
+
+  return (
+    <Box flexDirection="column">
+      {list.length === 0 && <Text dimColor>No edits yet.</Text>}
+      {list.length > 0 && (
+        <Box flexDirection="row" marginBottom={min ? 0 : 1}>
+          <Box flexGrow={1}>
+            <Text dimColor>{list.length} file{list.length === 1 ? '' : 's'}</Text>
+          </Box>
+          <Text color="green" dimColor> +{list.reduce((n, f) => n + f.adds, 0)}</Text>
+          <Text color="red" dimColor> -{list.reduce((n, f) => n + f.dels, 0)}</Text>
+          <Text> </Text>
+          <Button key="toggle" plain hotkey="m" dimColor onPress={async () => { await update($, minimized, m => !m); await openPane($) }}>
+            {min ? 'expand' : 'minimize'}
+          </Button>
+          <Text> </Text>
+          <Button key="flip" plain hotkey="f" dimColor onPress={() => flip($)}>flip</Button>
+        </Box>
+      )}
+      {rows.map(r => (
+        <Box key={r.key} flexDirection="row">
+          <Text dimColor>{r.prefix}</Text>
+          <Box flexGrow={1}>
+            {r.file
+              ? <Button key={r.key} plain onPress={show(r.file)}>
+                  <Text wrap="truncate-end" strikethrough={r.file.status === 'deleted'}
+                    color={r.file.status === 'new' ? 'green' : r.file.status === 'deleted' ? 'red' : undefined}>{r.name}</Text>
+                  {(r.file.status === 'new' || r.file.status === 'deleted') && <Text dimColor> {r.file.status}</Text>}
+                </Button>
+              : <Text bold color="blue" wrap="truncate-end">{r.name}</Text>}
+          </Box>
+          <Text color="green" dimColor={!r.file}> +{r.adds}</Text>
+          <Text color="red" dimColor={!r.file}> -{r.dels}</Text>
+        </Box>
+      ))}
+      {!min && list.length > 0 && isFocused && <Text dimColor>Enter on a file shows its diff</Text>}
+    </Box>
+  )
 }
